@@ -61,7 +61,7 @@ def find_chars(contour_list):
 # plt.style.use('dark_background')
 
 # img_origin = cv2.imread('bowling-sj3.jpg')
-img_origin = cv2.imread('car-number.jpg')
+img_origin = cv2.imread('car-sample.png')
 img_gray = cv2.cvtColor(img_origin, cv2.COLOR_BGR2GRAY)
 
 height, width, channel = img_origin.shape
@@ -81,7 +81,7 @@ print(height, width, channel)
 
 
 ### Adaptive Thresholding
-img_blurred = cv2.GaussianBlur(img_gray, ksize=(3, 3), sigmaX=0)
+img_blurred = cv2.GaussianBlur(img_gray, ksize=(5, 5), sigmaX=0)
 img_thresh = cv2.adaptiveThreshold(
     img_blurred,
     maxValue=255.0,
@@ -91,6 +91,7 @@ img_thresh = cv2.adaptiveThreshold(
     C=9
 )
 
+cv2.imshow('Threshold', img_thresh)
 
 ### Find Contours
 contours, _ = cv2.findContours(
@@ -101,20 +102,21 @@ contours, _ = cv2.findContours(
 
 temp_result = np.zeros((height, width, channel), dtype=np.uint8)
 
-# cv2.drawContours(temp_result, contours=contours, contourIdx=-1, color=(255, 255, 255))
+cv2.drawContours(temp_result, contours=contours, contourIdx=-1, color=(255, 255, 255))
 #
 # cv2.imshow('Contours0', temp_result)
 
 ### Prepare Data
+temp_result = np.zeros((height, width, channel), dtype=np.uint8)
 contours_dict = []
 
-for ct in contours:
-    x, y, w, h = cv2.boundingRect(ct)
-    cv2.rectangle(temp_result, pt1=(x, y), pt2=(x+w, y+h), color=(255, 255, 255), thickness=2)
+for contour in contours:
+    x, y, w, h = cv2.boundingRect(contour)
+    cv2.rectangle(temp_result, pt1=(x, y), pt2=(x + w, y + h), color=(255, 255, 255), thickness=2)
 
-    #insert to dict
+    # insert to dict
     contours_dict.append({
-        'contour': ct,
+        'contour': contour,
         'x': x,
         'y': y,
         'w': w,
@@ -123,12 +125,11 @@ for ct in contours:
         'cy': y + (h / 2)
     })
 
-cv2.imshow('Contours0', temp_result)
+cv2.imshow('1.Contours', temp_result)
 
 ### Select Candidates by Char Size
 MIN_AREA = 80
-MIN_WIDTH, MIN_HEIGHT = 1, 30
-MAX_WIDTH, MAX_HEIGHT = 30, 90
+MIN_WIDTH, MIN_HEIGHT = 2, 8
 MIN_RATIO, MAX_RATIO = 0.25, 1.0
 
 possible_contours = []
@@ -139,10 +140,9 @@ for d in contours_dict:
     ratio = d['w'] / d['h']
 
     if area > MIN_AREA \
-        and MIN_WIDTH < d['w'] < MAX_WIDTH and MIN_HEIGHT < d['h'] < MAX_HEIGHT \
-        and MIN_RATIO < ratio < MAX_RATIO:
+            and d['w'] > MIN_WIDTH and d['h'] > MIN_HEIGHT \
+            and MIN_RATIO < ratio < MAX_RATIO:
         d['idx'] = cnt
-        print(d)
         cnt += 1
         possible_contours.append(d)
 
@@ -150,18 +150,19 @@ for d in contours_dict:
 temp_result = np.zeros((height, width, channel), dtype=np.uint8)
 
 for d in possible_contours:
-    cv2.rectangle(temp_result, pt1=(d['x'], d['y']), pt2=(d['x']+d['w'], d['y']+d['h']), color=(255, 255, 255), thickness=2)
-
-cv2.imshow('Contours', temp_result)
+    #     cv2.drawContours(temp_result, d['contour'], -1, (255, 255, 255))
+    cv2.rectangle(temp_result, pt1=(d['x'], d['y']), pt2=(d['x'] + d['w'], d['y'] + d['h']), color=(255, 255, 255),
+                  thickness=2)
+cv2.imshow('2.Contours', temp_result)
 
 
 ### Select Candidates by Arrangement of Contours
 MAX_DIAG_MULTIPLYER = 5
 MAX_ANGLE_DIFF = 12.0
 MAX_AREA_DIFF = 0.5
-MAX_WIDTH_DIFF = 0.8
+MAX_WIDTH_DIFF = 0.5
 MAX_HEIGHT_DIFF = 0.2
-MIN_N_MATCHED = 3
+MIN_N_MATCHED = 5
 
 result_idx = find_chars(possible_contours)
 
@@ -176,15 +177,68 @@ for r in matched_result:
     for d in r:
         cv2.rectangle(temp_result, pt1=(d['x'], d['y']), pt2=(d['x']+d['w'], d['y']+d['h']), color=(255, 255, 255), thickness=2)
 
+cv2.imshow('3.Contours', temp_result)
 
+### Rotate Plate Images
+PLATE_WIDTH_PADDING = 1.3  # 1.3
+PLATE_HEIGHT_PADDING = 1.5  # 1.5
+MIN_PLATE_RATIO = 3
+MAX_PLATE_RATIO = 10
 
+plate_imgs = []
+plate_infos = []
+
+for i, matched_chars in enumerate(matched_result):
+    sorted_chars = sorted(matched_chars, key=lambda x: x['cx'])
+
+    plate_cx = (sorted_chars[0]['cx'] + sorted_chars[-1]['cx']) / 2
+    plate_cy = (sorted_chars[0]['cy'] + sorted_chars[-1]['cy']) / 2
+
+    plate_width = (sorted_chars[-1]['x'] + sorted_chars[-1]['w'] - sorted_chars[0]['x']) * PLATE_WIDTH_PADDING
+
+    sum_height = 0
+    for d in sorted_chars:
+        sum_height += d['h']
+
+    plate_height = int(sum_height / len(sorted_chars) * PLATE_HEIGHT_PADDING)
+
+    triangle_height = sorted_chars[-1]['cy'] - sorted_chars[0]['cy']
+    triangle_hypotenus = np.linalg.norm(
+        np.array([sorted_chars[0]['cx'], sorted_chars[0]['cy']]) -
+        np.array([sorted_chars[-1]['cx'], sorted_chars[-1]['cy']])
+    )
+
+    angle = np.degrees(np.arcsin(triangle_height / triangle_hypotenus))
+
+    rotation_matrix = cv2.getRotationMatrix2D(center=(plate_cx, plate_cy), angle=angle, scale=1.0)
+
+    img_rotated = cv2.warpAffine(img_thresh, M=rotation_matrix, dsize=(width, height))
+
+    img_cropped = cv2.getRectSubPix(
+        img_rotated,
+        patchSize=(int(plate_width), int(plate_height)),
+        center=(int(plate_cx), int(plate_cy))
+    )
+
+    if img_cropped.shape[1] / img_cropped.shape[0] < MIN_PLATE_RATIO or img_cropped.shape[1] / img_cropped.shape[
+        0] < MIN_PLATE_RATIO > MAX_PLATE_RATIO:
+        continue
+
+    plate_imgs.append(img_cropped)
+    plate_infos.append({
+        'x': int(plate_cx - plate_width / 2),
+        'y': int(plate_cy - plate_height / 2),
+        'w': int(plate_width),
+        'h': int(plate_height)
+    })
+
+    plt.subplot(len(matched_result), 1, i+1)
+    cv2.imshow('Rotate', img_cropped)
 
 # cv2.imshow('Car Number', img_origin)
 # cv2.imshow('Gray', img_gray)
 # cv2.imshow('Gray + TopHat + BlackHat', img_gray2)
 # cv2.imshow('Blurred', img_blurred)
-cv2.imshow('Threshold', img_thresh)
-cv2.imshow('Contours2', temp_result)
 
 cv2.waitKey(0)
 
